@@ -8,7 +8,6 @@
 int ctrl_c_count = 0;
 int got_response = 0;
 #define CTRL_C_THRESHOLD  5 
-
 /* the Ctrl-C signal handler */
 void catch_int(int sig_num)
 {
@@ -21,6 +20,7 @@ void catch_int(int sig_num)
      * exit or not */
     printf("\nReally exit? [Y/n]: ");
     fflush(stdout);
+    alarm(5);
     fgets(answer, sizeof(answer), stdin);
     if (answer[0] == 'n' || answer[0] == 'N') {
       printf("\nContinuing\n");
@@ -29,6 +29,7 @@ void catch_int(int sig_num)
        * Reset Ctrl-C counter
        */
       ctrl_c_count = 0;
+      alarm(0);
     }
     else {
       printf("\nExiting...\n");
@@ -46,11 +47,21 @@ void catch_tstp(int sig_num)
   fflush(stdout);
 }
 
+
 /* STEP - 1 (20 points) */
 /* Implement alarm handler - following catch_int and catch_tstp signal handlers */
 /* If the user DOES NOT RESPOND before the alarm time elapses, the program should exit */
 /* If the user RESPONDEDS before the alarm time elapses, the alarm should be cancelled */
 //YOUR CODE
+
+static void catch_alarm(const int sig_num)
+{
+    if (got_response == 0) {
+        printf("\nUser took too long to respond! Exiting...\n");
+        fflush(stdout);
+        exit(0);
+    }
+}
 
 int main(int argc, char* argv[])
 {
@@ -62,23 +73,36 @@ int main(int argc, char* argv[])
   /* if the sa memory location is reset this way, then no garbage value can create undefined behavior with the signal handlers */
   //YOUR CODE
 
+  memset(&sa, 0, sizeof(sa));
+
   sigset_t mask_set;  /* used to set a signal masking set. */
 
   /* STEP - 3 (10 points) */
   /* setup mask_set - fill up the mask_set with all the signals to block*/
   //YOUR CODE
-  
+
+  sigfillset(&mask_set);
+
   /* STEP - 4 (10 points) */
   /* ensure in the mask_set that the alarm signal does not get blocked while in another signal handler */
   //YOUR CODE
+  sigdelset(&mask_set, SIGALRM);
   
   /* STEP - 5 (20 points) */
   /* set signal handlers for SIGINT, SIGTSTP and SIGALRM */
   //YOUR CODE
+  sa.sa_handler = catch_int;
+  sigaction(SIGINT, &sa, NULL);
+  sa.sa_handler = catch_tstp;
+  sigaction(SIGTSTP, &sa, NULL);
+  sa.sa_handler = catch_alarm;
+  sigaction(SIGALRM, &sa, NULL);
   
   /* STEP - 6 (10 points) */
   /* ensure that the program keeps running to receive the signals */
   //YOUR CODE
+  while (1)
+      pause();
 
   return 0;
 }
