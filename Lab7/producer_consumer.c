@@ -354,51 +354,33 @@ void *consumer (void *carg)
    * reaches the configured maximum
    */
   while (1) {
-    /*
-     * If the queue is empty, we have no place to put anything we
-     * produce, so wait until it is not empty. Use sem_wait on the
-     * appropriate semaphore from the fifo queue, for the consumer.
-     */
-    
-	
-	/*
-     * If total consumption has reached the configured limit, we can
-     * stop. Before stopping, execute some additional sem_post for the 
-     * producers and consumers to free up ones that are in the waiting 
-     * queue for fifo->slotsToPut and fifo->slotsToGet respectively
-     */
+    pthread_mutex_lock(fifo->mutex);
     if (*total_consumed >= WORK_MAX) {
+      pthread_mutex_unlock(fifo->mutex);
+      sem_post(fifo->slotsToGet);
+      sem_post(fifo->slotsToPut);
+      break;
+    }
+    pthread_mutex_unlock(fifo->mutex);
+
+    sem_wait(fifo->slotsToGet);
+    pthread_mutex_lock(fifo->mutex);
+
+    if (*total_consumed >= WORK_MAX) {
+      pthread_mutex_unlock(fifo->mutex);
       sem_post(fifo->slotsToGet);
       sem_post(fifo->slotsToPut);
       break;
     }
 
-
-    /*
-     * Remove the next item from the queue. Increment the count of the
-     * total consumed. Note that item is a local copy so this
-     * thread can retain a memory of which item it consumed even if
-     * others are busy consuming them. We are accessing the shared queue 
-     * fifo in this section. So, we should ensure mutual exclusion.
-     */
-    sem_wait(fifo->slotsToGet);
-    pthread_mutex_lock (fifo->mutex);
-
-    queueRemove (fifo, &item);
+    queueRemove(fifo, &item);
     (*total_consumed)++;
+    
+    do_work(CONSUMER_CPU, CONSUMER_CPU);
+    printf("con %d:   %d.\n", my_tid, item);
 
-    /*
-     * Do work outside the critical region to consume the item
-     * obtained from the queue and then announce its consumption.
-	 * Also, notify the producers that there is available space
-	 * in the buffer
-     */
-    do_work(CONSUMER_CPU,CONSUMER_CPU);
-    printf ("con %d:   %d.\n", my_tid, item);
-
-    pthread_mutex_unlock (fifo->mutex);
+    pthread_mutex_unlock(fifo->mutex);
     sem_post(fifo->slotsToPut);
-
   }
 
   printf("con %d:   exited\n", my_tid);
