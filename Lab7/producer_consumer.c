@@ -387,10 +387,6 @@ void *consumer (void *carg)
     queueRemove (fifo, &item);
     (*total_consumed)++;
 
-    pthread_mutex_unlock (fifo->mutex);
-    sem_post(fifo->slotsToPut);
-
-
     /*
      * Do work outside the critical region to consume the item
      * obtained from the queue and then announce its consumption.
@@ -399,6 +395,9 @@ void *consumer (void *carg)
      */
     do_work(CONSUMER_CPU,CONSUMER_CPU);
     printf ("con %d:   %d.\n", my_tid, item);
+
+    pthread_mutex_unlock (fifo->mutex);
+    sem_post(fifo->slotsToPut);
 
   }
 
