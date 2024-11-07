@@ -301,7 +301,11 @@ void *producer (void *parg)
      * additional sem_post for the producers and consumers to free up ones
      * that are in the waiting queue for fifo->slotsToPut and fifo->slotsToGet respectively
      */
+    sem_wait(fifo->slotsToPut);
+    pthread_mutex_lock (fifo->mutex);
+
     if (*total_inserted >= WORK_MAX) {
+      pthread_mutex_unlock(fifo->mutex);
       sem_post(fifo->slotsToGet);
       sem_post(fifo->slotsToPut);
       break;
@@ -313,8 +317,6 @@ void *producer (void *parg)
      * queue. We are accessing the shared queue fifo in this section.
      * So, we should ensure mutual exclusion.
      */
-    sem_wait(fifo->slotsToPut);
-    pthread_mutex_lock (fifo->mutex);
 
     item = (*total_inserted);
     queueAdd (fifo, item);
