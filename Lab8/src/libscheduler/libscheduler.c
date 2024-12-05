@@ -14,6 +14,18 @@
 
   You may need to define some global variables or a struct to store your job queue elements. 
 */
+
+typedef struct _completed_job_t {
+    int arrival_time;
+    int start_time;
+    int end_time;
+    int first_run_time;
+    int total_run_time;
+} completed_job_t;
+
+completed_job_t *completed_jobs = NULL;
+int completed_jobs_count = 0;
+
 typedef struct _job_t
 {
     int job_number;
@@ -24,7 +36,9 @@ typedef struct _job_t
     int core_id;
     int start_time;
     int end_time;
+    int total_run_time;
     int first_run_time;
+    int quantum_used;
 } job_t;
 
 priqueue_t job_queue;
@@ -56,11 +70,12 @@ static int compare_psjf(const void *const lhs, const void *const rhs)
 {
     job_t *job1 = (job_t*)lhs;
     job_t *job2 = (job_t*)rhs;
-    if (job1->time_remaining == job2->time_remaining) {
-        return job1->arrival_time - job2->arrival_time;
+    
+    if (job1->time_remaining != job2->time_remaining) {
+        return job1->time_remaining - job2->time_remaining;
     }
-
-    return job1->time_remaining - job2->time_remaining;
+    
+    return job1->arrival_time - job2->arrival_time;
 }
 
 static int compare_pri(const void *const lhs, const void *const rhs)
@@ -81,7 +96,7 @@ static int compare_ppri(const void *const lhs, const void *const rhs)
 
 static int compare_rr(const void *const lhs, const void *const rhs)
 {
-    return compare_fcfs(lhs, rhs);
+    return 0;
 }
 
 /**
@@ -102,6 +117,8 @@ void scheduler_start_up(const int cores, const scheme_t scheme)
     scheduler_scheme = scheme;
     core_jobs = malloc(sizeof(job_t*) * cores);
     total_jobs = 0;
+    completed_jobs_count = 0;
+    completed_jobs = NULL;
     
     for (int i = 0; i < cores; i++) {
         core_jobs[i] = NULL;
@@ -147,43 +164,95 @@ inline static int find_free_core()
     return -1;
 }
 
-int scheduler_new_job(const int job_number, const int time, const int running_time, const int priority) {
+int scheduler_new_job(const int job_number, const int time, const int running_time, const int priority)
+{
+    if (running_time <= 0 || time < 0) {
+        return -1;
+    }
+    
     job_t *job = malloc(sizeof(job_t));
+    if (!job) {
+        return -1;
+    }
     job->job_number = job_number;
     job->arrival_time = time;
     job->running_time = running_time;
     job->time_remaining = running_time;
     job->priority = priority;
     job->core_id = -1;
-    job->start_time = -1;
+    job->start_time = time;
     job->end_time = -1;
     job->first_run_time = -1;
+    job->quantum_used = 0;
     total_jobs++;
 
     const int free_core = find_free_core();
     if (free_core != -1) {
         job->core_id = free_core;
-        job->start_time = time;
         job->first_run_time = time;
         core_jobs[free_core] = job;
         return free_core;
     }
 
-    if (scheduler_scheme == PSJF || scheduler_scheme == PPRI) {
+    if (scheduler_scheme == PSJF) {
+        // Find job with most remaining time
+        int max_remaining = -1;
+        int core_to_preempt = -1;
+        
         for (int i = 0; i < num_cores; i++) {
-            if (core_jobs[i] && 
-                ((scheduler_scheme == PSJF && job->time_remaining < core_jobs[i]->time_remaining) ||
-                 (scheduler_scheme == PPRI && job->priority < core_jobs[i]->priority))) {
-                priqueue_offer(&job_queue, core_jobs[i]);
-                job->core_id = i;
-                job->start_time = time;
-                job->first_run_time = time;
-                core_jobs[i] = job;
-                return i;
+            if (core_jobs[i]) {
+                int elapsed = time - core_jobs[i]->start_time;
+                int remaining = core_jobs[i]->time_remaining - elapsed;
+                
+                if (remaining > job->time_remaining && 
+                    (max_remaining == -1 || remaining > max_remaining)) {
+                    max_remaining = remaining;
+                    core_to_preempt = i;
+                }
             }
         }
+        
+        if (core_to_preempt != -1) {
+            int elapsed = time - core_jobs[core_to_preempt]->start_time;
+            core_jobs[core_to_preempt]->time_remaining -= elapsed;
+            core_jobs[core_to_preempt]->start_time = time;
+            priqueue_offer(&job_queue, core_jobs[core_to_preempt]);
+            
+            job->core_id = core_to_preempt;
+            job->start_time = time;
+            job->first_run_time = time;
+            core_jobs[core_to_preempt] = job;
+            return core_to_preempt;
+        }
     }
-
+    else if (scheduler_scheme == PPRI) {
+        // Find job with lowest priority
+        int highest_priority = -1;
+        int core_to_preempt = -1;
+        
+        for (int i = 0; i < num_cores; i++) {
+            if (core_jobs[i] && core_jobs[i]->priority > job->priority) {
+                if (highest_priority == -1 || core_jobs[i]->priority > highest_priority) {
+                    highest_priority = core_jobs[i]->priority;
+                    core_to_preempt = i;
+                }
+            }
+        }
+        
+        if (core_to_preempt != -1) {
+            int elapsed = time - core_jobs[core_to_preempt]->start_time;
+            core_jobs[core_to_preempt]->time_remaining -= elapsed;
+            core_jobs[core_to_preempt]->start_time = time;
+            priqueue_offer(&job_queue, core_jobs[core_to_preempt]);
+            
+            job->core_id = core_to_preempt;
+            job->start_time = time;
+            job->first_run_time = time;
+            core_jobs[core_to_preempt] = job;
+            return core_to_preempt;
+        }
+    }
+    
     priqueue_offer(&job_queue, job);
     return -1;
 }
@@ -206,24 +275,30 @@ int scheduler_job_finished(const int core_id, const int job_number, const int ti
 {
     if (core_jobs[core_id]) {
         core_jobs[core_id]->end_time = time;
+
+        completed_jobs = realloc(completed_jobs, (completed_jobs_count + 1) * sizeof(completed_job_t));
+        completed_jobs[completed_jobs_count].arrival_time = core_jobs[core_id]->arrival_time;
+        completed_jobs[completed_jobs_count].first_run_time = core_jobs[core_id]->first_run_time;
+        completed_jobs[completed_jobs_count].end_time = time;
+        completed_jobs_count++;
+
         free(core_jobs[core_id]);
+        core_jobs[core_id] = NULL;
     }
     
     if (priqueue_size(&job_queue) > 0) {
         job_t *next_job = priqueue_poll(&job_queue);
         core_jobs[core_id] = next_job;
         next_job->core_id = core_id;
-        if (next_job->start_time == -1) {
-            next_job->start_time = time;
+        next_job->start_time = time;
+        if (next_job->first_run_time == -1) {
             next_job->first_run_time = time;
         }
         return next_job->job_number;
     }
     
-    core_jobs[core_id] = NULL;
-	return -1;
+    return -1;
 }
-
 
 /**
   When the scheme is set to RR, called when the quantum timer has expired
@@ -238,30 +313,60 @@ int scheduler_job_finished(const int core_id, const int job_number, const int ti
   @return job_number of the job that should be scheduled on core cord_id
   @return -1 if core should remain idle
  */
+
 int scheduler_quantum_expired(const int core_id, const int time)
 {
-    if (scheduler_scheme != RR) return -1;
+    if (scheduler_scheme != RR) {
+        return -1;
+    }
     
-    if (core_jobs[core_id]) {
-        job_t *current_job = core_jobs[core_id];
+    job_t *current_job = core_jobs[core_id];
+    if (!current_job) {
+        if (priqueue_size(&job_queue) > 0) {
+            job_t *next_job = priqueue_poll(&job_queue);
+            core_jobs[core_id] = next_job;
+            next_job->core_id = core_id;
+            next_job->start_time = time;
+            if (next_job->first_run_time == -1) {
+                next_job->first_run_time = time;
+            }
+            return next_job->job_number;
+        }
+        return -1;
+    }
+
+    const int elapsed = time - current_job->start_time;
+    current_job->time_remaining -= elapsed;
+
+    if (current_job->time_remaining <= 0) {
+        completed_jobs = realloc(completed_jobs, (completed_jobs_count + 1) * sizeof(completed_job_t));
+        completed_jobs[completed_jobs_count].arrival_time = current_job->arrival_time;
+        completed_jobs[completed_jobs_count].first_run_time = current_job->first_run_time;
+        completed_jobs[completed_jobs_count].end_time = time;
+        completed_jobs_count++;
+        
+        free(core_jobs[core_id]);
+        core_jobs[core_id] = NULL;
+    } else {
+        current_job->start_time = time;
+        current_job->core_id = -1;
         priqueue_offer(&job_queue, current_job);
+        core_jobs[core_id] = NULL;
     }
     
     if (priqueue_size(&job_queue) > 0) {
         job_t *next_job = priqueue_poll(&job_queue);
         core_jobs[core_id] = next_job;
         next_job->core_id = core_id;
-        if (next_job->start_time == -1) {
-            next_job->start_time = time;
+        next_job->start_time = time;
+        if (next_job->first_run_time == -1) {
             next_job->first_run_time = time;
         }
         return next_job->job_number;
     }
     
-    core_jobs[core_id] = NULL;
-	return -1;
+    return -1;
 }
-
 
 /**
   Returns the average waiting time of all jobs scheduled by your scheduler.
@@ -270,18 +375,20 @@ int scheduler_quantum_expired(const int core_id, const int time)
     - This function will only be called after all scheduling is complete (all jobs that have arrived will have finished and no new jobs will arrive).
   @return the average waiting time of all jobs scheduled.
  */
+
 float scheduler_average_waiting_time()
 {
+    if (total_jobs == 0) return 0.0f;
+    
     float total_waiting_time = 0.0f;
-    for (int i = 0; i < num_cores; i++) {
-        if (core_jobs[i]) {
-            total_waiting_time += (float)core_jobs[i]->start_time - core_jobs[i]->arrival_time;
-        }
+    for (int i = 0; i < completed_jobs_count; i++) {
+        int turnaround_time = completed_jobs[i].end_time - completed_jobs[i].arrival_time;
+        int running_time = completed_jobs[i].total_run_time;
+        total_waiting_time += (float)(turnaround_time - running_time);
     }
-
-    return total_jobs == 0 ? 0.0f : total_waiting_time / total_jobs;
+    
+    return total_waiting_time / total_jobs;
 }
-
 
 /**
   Returns the average turnaround time of all jobs scheduled by your scheduler.
@@ -290,18 +397,20 @@ float scheduler_average_waiting_time()
     - This function will only be called after all scheduling is complete (all jobs that have arrived will have finished and no new jobs will arrive).
   @return the average turnaround time of all jobs scheduled.
  */
+
 float scheduler_average_turnaround_time()
 {
+    if (total_jobs == 0) return 0.0f;
+    
     float total_turnaround_time = 0.0f;
-    for (int i = 0; i < num_cores; i++) {
-        if (core_jobs[i]) {
-            total_turnaround_time += (float)core_jobs[i]->end_time - core_jobs[i]->arrival_time;
-        }
+    
+    for (int i = 0; i < completed_jobs_count; i++) {
+        total_turnaround_time += (float)(completed_jobs[i].end_time - 
+                                       completed_jobs[i].arrival_time);
     }
-
-    return total_jobs == 0 ? 0.0f : total_turnaround_time / total_jobs;
+    
+    return total_turnaround_time / total_jobs;
 }
-
 
 /**
   Returns the average response time of all jobs scheduled by your scheduler.
@@ -310,18 +419,18 @@ float scheduler_average_turnaround_time()
     - This function will only be called after all scheduling is complete (all jobs that have arrived will have finished and no new jobs will arrive).
   @return the average response time of all jobs scheduled.
  */
+
 float scheduler_average_response_time()
 {
+    if (total_jobs == 0) return 0.0f;
+    
     float total_response_time = 0.0f;
-    for (int i = 0; i < num_cores; i++) {
-        if (core_jobs[i]) {
-            total_response_time += (float)core_jobs[i]->first_run_time - core_jobs[i]->arrival_time;
-        }
+    for (int i = 0; i < completed_jobs_count; i++) {
+        total_response_time += (float)(completed_jobs[i].first_run_time - completed_jobs[i].arrival_time);
     }
-
-    return total_jobs == 0 ? 0.0f : total_response_time / total_jobs;
+    
+    return total_response_time / total_jobs;
 }
-
 
 /**
   Free any memory associated with your scheduler.
@@ -338,6 +447,7 @@ void scheduler_clean_up()
     }
 
     free(core_jobs);
+    free(completed_jobs);
     priqueue_destroy(&job_queue);
 }
 
